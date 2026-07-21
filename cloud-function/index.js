@@ -132,9 +132,9 @@ async function loadProcessedIds(drive) {
 
     if (response.data.files && response.data.files.length > 0) {
       const metadataFileId = response.data.files[0].id;
-      const contentResponse = await drive.files.export({
+      const contentResponse = await drive.files.get({
         fileId: metadataFileId,
-        mimeType: 'text/plain',
+        alt: 'media',
       });
       const data = JSON.parse(contentResponse.data);
       return new Set(data.processedIds || []);
