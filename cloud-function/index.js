@@ -56,7 +56,7 @@ async function translateToSpanish(text) {
   const client = new Anthropic({ apiKey });
   try {
     const message = await client.messages.create({
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-4-1-20250805',
       max_tokens: 2048,
       messages: [
         {
@@ -87,7 +87,7 @@ async function translateToSpanishViaGoogle(text) {
     const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT;
 
     const request = {
-      parent: `projects/${projectId}`,
+      parent: `projects/${projectId}/locations/global`,
       contents: [text],
       targetLanguageCode: 'es',
     };
@@ -119,16 +119,18 @@ async function getAuthenticatedClient() {
   return auth.getClient();
 }
 
-async function findNewMeetingNotes(drive) {
+async function findNewMeetingNotes(drive, processedIds) {
   try {
     const query = `'${MEET_RECORDINGS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.document' and name contains 'Notes by Gemini' and trashed=false`;
     const response = await drive.files.list({
       q: query,
       pageSize: 10,
-      fields: 'files(id, name, webViewLink)',
+      fields: 'files(id, name, webViewLink, modifiedTime)',
+      orderBy: 'modifiedTime desc',
     });
 
-    return response.data.files || [];
+    const newDocs = (response.data.files || []).filter(file => !processedIds.has(file.id));
+    return newDocs;
   } catch (error) {
     console.error('Error finding meeting notes:', error.message);
     return [];
@@ -137,10 +139,9 @@ async function findNewMeetingNotes(drive) {
 
 async function getDocContent(drive, docId) {
   try {
-    const response = await drive.files.get({
+    const response = await drive.files.export({
       fileId: docId,
       mimeType: 'text/plain',
-      alt: 'media',
     });
     return response.data;
   } catch (error) {
@@ -206,7 +207,20 @@ exports.meetingNotesDistributor = async (req, res) => {
     const drive = google.drive({ version: 'v3', auth: authClient });
     const gmail = google.gmail({ version: 'v1', auth: authClient });
 
-    const newDocs = await findNewMeetingNotes(drive);
+    let processedIds = new Set();
+    try {
+      const storedMetadata = await drive.files.get({
+        fileId: 'appProperties',
+        fields: 'appProperties',
+      });
+      if (storedMetadata.data.appProperties?.processedDocs) {
+        processedIds = new Set(JSON.parse(storedMetadata.data.appProperties.processedDocs));
+      }
+    } catch (e) {
+      console.log('No previous state found, starting fresh');
+    }
+
+    const newDocs = await findNewMeetingNotes(drive, processedIds);
     console.log(`Found ${newDocs.length} new meeting notes`);
 
     if (newDocs.length === 0) {
@@ -219,6 +233,7 @@ exports.meetingNotesDistributor = async (req, res) => {
 
       if (!content || content.trim().length === 0) {
         console.log(`⚠ Empty document: ${doc.name}`);
+        processedIds.add(doc.id);
         continue;
       }
 
@@ -232,6 +247,8 @@ exports.meetingNotesDistributor = async (req, res) => {
           doc.webViewLink
         );
       }
+
+      processedIds.add(doc.id);
     }
 
     console.log(`=== Processed ${newDocs.length} document(s) ===`);
