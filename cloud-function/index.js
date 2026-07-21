@@ -109,6 +109,8 @@ async function translateToSpanishViaGoogle(text) {
 // GOOGLE DRIVE & EMAIL OPERATIONS
 // ============================================================================
 
+const PROCESSED_METADATA_FILE = '.processed_notes_metadata.json';
+
 async function getAuthenticatedClient() {
   const auth = new google.auth.GoogleAuth({
     scopes: [
@@ -117,6 +119,70 @@ async function getAuthenticatedClient() {
     ],
   });
   return auth.getClient();
+}
+
+async function loadProcessedIds(drive) {
+  try {
+    const query = `'${MEET_RECORDINGS_FOLDER_ID}' in parents and name='${PROCESSED_METADATA_FILE}' and trashed=false`;
+    const response = await drive.files.list({
+      q: query,
+      fields: 'files(id)',
+      pageSize: 1,
+    });
+
+    if (response.data.files && response.data.files.length > 0) {
+      const metadataFileId = response.data.files[0].id;
+      const contentResponse = await drive.files.export({
+        fileId: metadataFileId,
+        mimeType: 'text/plain',
+      });
+      const data = JSON.parse(contentResponse.data);
+      return new Set(data.processedIds || []);
+    }
+  } catch (error) {
+    console.log('Could not load processed IDs, starting fresh:', error.message);
+  }
+  return new Set();
+}
+
+async function saveProcessedIds(drive, processedIds) {
+  try {
+    const data = { processedIds: Array.from(processedIds), lastUpdated: new Date().toISOString() };
+    const content = JSON.stringify(data, null, 2);
+
+    const query = `'${MEET_RECORDINGS_FOLDER_ID}' in parents and name='${PROCESSED_METADATA_FILE}' and trashed=false`;
+    const response = await drive.files.list({
+      q: query,
+      fields: 'files(id)',
+      pageSize: 1,
+    });
+
+    if (response.data.files && response.data.files.length > 0) {
+      const metadataFileId = response.data.files[0].id;
+      await drive.files.update({
+        fileId: metadataFileId,
+        media: {
+          mimeType: 'text/plain',
+          body: content,
+        },
+      });
+    } else {
+      await drive.files.create({
+        requestBody: {
+          name: PROCESSED_METADATA_FILE,
+          parents: [MEET_RECORDINGS_FOLDER_ID],
+          mimeType: 'application/json',
+        },
+        media: {
+          mimeType: 'application/json',
+          body: content,
+        },
+      });
+    }
+    console.log('✓ Saved processed IDs');
+  } catch (error) {
+    console.error('Error saving processed IDs:', error.message);
+  }
 }
 
 async function findNewMeetingNotes(drive, processedIds) {
@@ -207,18 +273,8 @@ exports.meetingNotesDistributor = async (req, res) => {
     const drive = google.drive({ version: 'v3', auth: authClient });
     const gmail = google.gmail({ version: 'v1', auth: authClient });
 
-    let processedIds = new Set();
-    try {
-      const storedMetadata = await drive.files.get({
-        fileId: 'appProperties',
-        fields: 'appProperties',
-      });
-      if (storedMetadata.data.appProperties?.processedDocs) {
-        processedIds = new Set(JSON.parse(storedMetadata.data.appProperties.processedDocs));
-      }
-    } catch (e) {
-      console.log('No previous state found, starting fresh');
-    }
+    const processedIds = await loadProcessedIds(drive);
+    console.log(`Loaded ${processedIds.size} previously processed documents`);
 
     const newDocs = await findNewMeetingNotes(drive, processedIds);
     console.log(`Found ${newDocs.length} new meeting notes`);
@@ -250,6 +306,8 @@ exports.meetingNotesDistributor = async (req, res) => {
 
       processedIds.add(doc.id);
     }
+
+    await saveProcessedIds(drive, processedIds);
 
     console.log(`=== Processed ${newDocs.length} document(s) ===`);
     res.json({ status: 'Success', processed: newDocs.length });
