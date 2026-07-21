@@ -136,7 +136,9 @@ async function loadProcessedIds(drive) {
         fileId: metadataFileId,
         alt: 'media',
       });
-      const data = JSON.parse(contentResponse.data);
+      const data = typeof contentResponse.data === 'string'
+        ? JSON.parse(contentResponse.data)
+        : contentResponse.data;
       return new Set(data.processedIds || []);
     }
   } catch (error) {
