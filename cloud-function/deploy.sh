@@ -75,7 +75,8 @@ echo "✓ APIs enabled"
 echo ""
 echo "🚀 Deploying Cloud Function..."
 
-DEPLOY_ARGS="--source . \
+DEPLOY_ARGS="--no-gen2 \
+  --source . \
   --runtime $RUNTIME \
   --trigger-http \
   --allow-unauthenticated \
