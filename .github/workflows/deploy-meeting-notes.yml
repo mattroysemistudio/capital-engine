@@ -1,4 +1,4 @@
-name: Deploy meetingNotesDistributor
+name: Deploy Meeting Notes Cloud Function
 
 on:
   push:
@@ -25,43 +25,20 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up gcloud
+      - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: semi-capital-engine
 
-      - name: Enable required APIs
+      - name: Enable required Google Cloud APIs
         run: |
           gcloud services enable \
             cloudfunctions.googleapis.com \
+            cloudbuild.googleapis.com \
+            cloudrun.googleapis.com \
+            artifactregistry.googleapis.com \
             cloudscheduler.googleapis.com \
-            cloudresourcemanager.googleapis.com \
-            --project=semi-capital-engine
+            --project=${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Delete existing Gen2 function if present
+      - name: Deploy Cloud Function
         run: |
-          gcloud functions delete meetingNotesDistributor \
-            --region=us-central1 \
-            --project=semi-capital-engine \
-            --gen2 --quiet 2>/dev/null || echo "No Gen2 function to delete"
-
-      - name: Deploy Cloud Function (Gen1)
-        working-directory: cloud-function
-        run: |
-          gcloud functions deploy meetingNotesDistributor \
-            --no-gen2 \
-            --source=. \
-            --runtime=nodejs22 \
-            --trigger-http \
-            --allow-unauthenticated \
-            --entry-point=meetingNotesDistributor \
-            --region=us-central1 \
-            --project=semi-capital-engine \
-            --quiet
-
-      - name: Print function URL
-        run: |
-          gcloud functions describe meetingNotesDistributor \
-            --region=us-central1 \
-            --project=semi-capital-engine \
-            --format='value(httpsTrigger.url)'
+          cd cloud-function
+          ./deploy.sh ${{ secrets.GCP_PROJECT_ID }}
