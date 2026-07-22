@@ -12,7 +12,7 @@ PROJECT_ID="${1:-}"
 ANTHROPIC_API_KEY="${2:-}"
 FUNCTION_NAME="meetingNotesDistributor"
 REGION="us-central1"
-RUNTIME="nodejs20"
+RUNTIME="nodejs22"
 TRIGGER_NAME="meeting-notes-trigger"
 
 # ============================================================================
@@ -61,6 +61,9 @@ echo "🔧 Enabling required Google Cloud APIs..."
 gcloud services enable cloudfunctions.googleapis.com \
   cloudscheduler.googleapis.com \
   cloudresourcemanager.googleapis.com \
+  cloudbuild.googleapis.com \
+  run.googleapis.com \
+  artifactregistry.googleapis.com \
   --project="$PROJECT_ID"
 
 echo "✓ APIs enabled"
