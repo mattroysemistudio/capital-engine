@@ -1,0 +1,14 @@
+{
+  "name": "meeting-notes-distributor",
+  "version": "1.0.0",
+  "description": "Google Cloud Function for distributing Gemini meeting notes with language preferences",
+  "main": "index.js",
+  "runtime": "nodejs20",
+  "dependencies": {
+    "googleapis": "^140.0.0",
+    "@anthropic-ai/sdk": "^0.28.0"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}

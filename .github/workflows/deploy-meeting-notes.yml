@@ -1,0 +1,60 @@
+name: Deploy meetingNotesDistributor
+
+on:
+  push:
+    branches:
+      - claude/meeting-notes-language-pref-kyrt2j
+      - main
+    paths:
+      - 'cloud-function/**'
+      - '.github/workflows/deploy-meeting-notes.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Workload Identity)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/713071090541/locations/global/workloadIdentityPools/github/providers/github-provider
+          service_account: github-deployer@semi-capital-engine.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: semi-capital-engine
+
+      - name: Delete existing Gen2 function if present
+        run: |
+          gcloud functions delete meetingNotesDistributor \
+            --region=us-central1 \
+            --project=semi-capital-engine \
+            --gen2 --quiet 2>/dev/null || echo "No Gen2 function to delete"
+
+      - name: Deploy Cloud Function (Gen1)
+        working-directory: cloud-function
+        run: |
+          gcloud functions deploy meetingNotesDistributor \
+            --no-gen2 \
+            --source=. \
+            --runtime=nodejs22 \
+            --trigger-http \
+            --allow-unauthenticated \
+            --entry-point=meetingNotesDistributor \
+            --region=us-central1 \
+            --project=semi-capital-engine \
+            --quiet
+
+      - name: Print function URL
+        run: |
+          gcloud functions describe meetingNotesDistributor \
+            --region=us-central1 \
+            --project=semi-capital-engine \
+            --format='value(httpsTrigger.url)'
