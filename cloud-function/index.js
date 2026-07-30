@@ -6,6 +6,12 @@
  *
  * Deploy via: `gcloud functions deploy meetingNotesDistributor`
  * Trigger: Cloud Scheduler (every 30 minutes) or on-demand HTTP trigger
+ *
+ * Required secrets in Secret Manager (set via --set-secrets in workflow):
+ *   ANTHROPIC_API_KEY      — for Claude translation
+ *   GMAIL_CLIENT_ID        — OAuth2 client ID for Gmail sending
+ *   GMAIL_CLIENT_SECRET    — OAuth2 client secret
+ *   GMAIL_REFRESH_TOKEN    — OAuth2 refresh token for general@semistudio.com
  */
 
 const { google } = require('googleapis');
@@ -32,9 +38,10 @@ const DISTRIBUTION_LIST = [
 ];
 
 const MEET_RECORDINGS_FOLDER_ID = '1Ir20saBJuh0KI3RGKhKLEppIxb0Nd6QH';
+const GMAIL_SENDER = 'general@semistudio.com';
 
 // ============================================================================
-// HELPER FUNCTIONS
+// TRANSLATION
 // ============================================================================
 
 function getLanguagePreference(email) {
@@ -61,12 +68,7 @@ async function translateToSpanish(text) {
       messages: [
         {
           role: 'user',
-          content: `Translate the following meeting notes to Spanish, preserving SEMI brand terminology and tone. Keep these terms as-is: Dinosaur Pizza, Founder, Integrator, Visionary, Operator, design-build, FF&E.
-
-ENGLISH:
-${text}
-
-SPANISH:`,
+          content: `Translate the following meeting notes to Spanish, preserving SEMI brand terminology and tone. Keep these terms as-is: Dinosaur Pizza, Founder, Integrator, Visionary, Operator, design-build, FF&E.\n\nENGLISH:\n${text}\n\nSPANISH:`,
         },
       ],
     });
@@ -79,9 +81,6 @@ SPANISH:`,
 }
 
 async function translateToSpanishViaGoogle(text) {
-  // Google Translate is built into Cloud Functions via googleapis
-  // For simplicity, we'll use a basic fetch to Google Translate API
-  // Requires: GOOGLE_CLOUD_PROJECT set and Cloud Translation API enabled
   try {
     const translate = google.translate('v3');
     const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT;
@@ -101,25 +100,52 @@ async function translateToSpanishViaGoogle(text) {
     return response.data.translations[0].translatedText;
   } catch (error) {
     console.log('Google Translate error:', error.message);
-    return text; // Fallback: return original
+    return text;
   }
 }
 
 // ============================================================================
-// GOOGLE DRIVE & EMAIL OPERATIONS
+// AUTH
+// ============================================================================
+
+// Drive: Application Default Credentials work fine — the runtime SA has Drive access.
+async function getDriveClient() {
+  const auth = new google.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/drive'],
+  });
+  const client = await auth.getClient();
+  return google.drive({ version: 'v3', auth: client });
+}
+
+// Gmail: service accounts don't have Gmail inboxes, and org policy blocks SA key creation
+// so domain-wide delegation via JWT is unavailable. Instead we use OAuth2 with a stored
+// refresh token for general@semistudio.com. One-time setup:
+//   1. Create an OAuth2 client in Cloud Console (APIs & Services > Credentials > OAuth 2.0)
+//   2. Run the consent flow once for general@semistudio.com to obtain a refresh token
+//   3. Store GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN in Secret Manager
+//   4. Add those three secrets to --set-secrets in the deploy workflow
+async function getGmailClient() {
+  const clientId = process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
+  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error(
+      'Gmail OAuth2 credentials not configured. ' +
+      'Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN in Secret Manager.'
+    );
+  }
+
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return google.gmail({ version: 'v1', auth: oauth2Client });
+}
+
+// ============================================================================
+// GOOGLE DRIVE OPERATIONS
 // ============================================================================
 
 const PROCESSED_METADATA_FILE = '.processed_notes_metadata.json';
-
-async function getAuthenticatedClient() {
-  const auth = new google.auth.GoogleAuth({
-    scopes: [
-      'https://www.googleapis.com/auth/drive',
-      'https://www.googleapis.com/auth/gmail.send',
-    ],
-  });
-  return auth.getClient();
-}
 
 async function loadProcessedIds(drive) {
   try {
@@ -181,7 +207,7 @@ async function saveProcessedIds(drive, processedIds) {
         },
       });
     }
-    console.log('✓ Saved processed IDs');
+    console.log('\u2713 Saved processed IDs');
   } catch (error) {
     console.error('Error saving processed IDs:', error.message);
   }
@@ -218,10 +244,14 @@ async function getDocContent(drive, docId) {
   }
 }
 
+// ============================================================================
+// EMAIL
+// ============================================================================
+
 async function sendEmail(gmail, to, subject, body) {
   try {
     const email = [
-      `From: noreply@semistudio.com`,
+      `From: ${GMAIL_SENDER}`,
       `To: ${to}`,
       `Subject: ${subject}`,
       '',
@@ -235,14 +265,12 @@ async function sendEmail(gmail, to, subject, body) {
 
     await gmail.users.messages.send({
       userId: 'me',
-      requestBody: {
-        raw: base64Email,
-      },
+      requestBody: { raw: base64Email },
     });
 
-    console.log(`✓ Sent to ${to}`);
+    console.log(`\u2713 Sent to ${to}`);
   } catch (error) {
-    console.error(`✗ Failed to send to ${to}:`, error.message);
+    console.error(`\u2717 Failed to send to ${to}:`, error.message);
   }
 }
 
@@ -253,11 +281,11 @@ async function sendMeetingNotes(gmail, email, name, title, content, docUrl) {
 
   if (shouldSendSpanish) {
     const spanishContent = await translateToSpanish(content);
-    subject = `Notas de Reunión — ${title}`;
-    body = `Hola ${name},\n\nAquí están las notas de la reunión:\n\n${spanishContent}\n\nDocumento: ${docUrl}\n\n—\nSISTEMA AUTOMÁTICO DE DISTRIBUCIÓN DE NOTAS`;
+    subject = `Notas de Reuni\u00f3n \u2014 ${title}`;
+    body = `Hola ${name},\n\nAqu\u00ed est\u00e1n las notas de la reuni\u00f3n:\n\n${spanishContent}\n\nDocumento: ${docUrl}\n\n\u2014\nSISTEMA AUTOM\u00c1TICO DE DISTRIBUCI\u00d3N DE NOTAS`;
   } else {
-    subject = `Meeting Notes — ${title}`;
-    body = `Hi ${name},\n\nHere are today's meeting notes:\n\n${content}\n\nFull document: ${docUrl}\n\n—\nAutomatic Meeting Notes Distribution`;
+    subject = `Meeting Notes \u2014 ${title}`;
+    body = `Hi ${name},\n\nHere are today's meeting notes:\n\n${content}\n\nFull document: ${docUrl}\n\n\u2014\nAutomatic Meeting Notes Distribution`;
   }
 
   await sendEmail(gmail, email, subject, body);
@@ -271,9 +299,8 @@ exports.meetingNotesDistributor = async (req, res) => {
   console.log('=== Meeting Notes Distribution Starting ===');
 
   try {
-    const authClient = await getAuthenticatedClient();
-    const drive = google.drive({ version: 'v3', auth: authClient });
-    const gmail = google.gmail({ version: 'v1', auth: authClient });
+    const drive = await getDriveClient();
+    const gmail = await getGmailClient();
 
     const processedIds = await loadProcessedIds(drive);
     console.log(`Loaded ${processedIds.size} previously processed documents`);
@@ -290,7 +317,7 @@ exports.meetingNotesDistributor = async (req, res) => {
       const content = await getDocContent(drive, doc.id);
 
       if (!content || content.trim().length === 0) {
-        console.log(`⚠ Empty document: ${doc.name}`);
+        console.log(`\u26a0 Empty document: ${doc.name}`);
         processedIds.add(doc.id);
         continue;
       }

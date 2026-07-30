@@ -3,7 +3,6 @@ name: Deploy meetingNotesDistributor
 on:
   push:
     branches:
-      - claude/meeting-notes-language-pref-kyrt2j
       - main
     paths:
       - 'cloud-function/**'
@@ -50,6 +49,7 @@ jobs:
             --entry-point=meetingNotesDistributor \
             --region=us-central1 \
             --project=semi-capital-engine \
+            --set-secrets=ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest \
             --quiet
 
       - name: Print function URL
